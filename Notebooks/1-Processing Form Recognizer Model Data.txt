@@ -1,0 +1,89 @@
+import pkg_resources
+
+from azure.storage.blob import BlobServiceClient, ContainerClient
+from azure.core.credentials import AzureKeyCredential
+from azure.ai.formrecognizer import DocumentAnalysisClient
+import os, warnings, io
+import pandas as pd 
+from requests import get, post 
+warnings.simplefilter(action='ignore', category=FutureWarning)
+
+
+conn_str = "<Enter your connection string where you have files uploaded for scoring>" 
+container = "<enter the container name that has the scoring files>"
+
+endpoint = "<Enter the form recognizer endpoint>"
+key = "<enter the form recognizer key>"
+model_id = "<enter the form recognizer model id from the form recognizer studio"
+
+# list input PDF files 
+def ls_files(client, path, recursive=False):
+    if not path == '' and not path.endswith('/'):
+        path += '/'
+
+    blob_list = client.list_blobs(name_starts_with=path)
+    files = []
+    for blob in blob_list:
+        relative_path = os.path.relpath(blob.name, path) # blob.name is the name of blobs in containers
+        if recursive or not '/' in relative_path:
+            files.append(relative_path)
+            files = [f for f in files if f.endswith('.pdf')] # look for PDF files 
+    return files
+
+
+container_client = ContainerClient.from_connection_string(
+    conn_str=conn_str,
+    container_name=container
+)
+
+blob_service_client = BlobServiceClient.from_connection_string(conn_str)
+client = blob_service_client.get_container_client(container)
+
+input_files = ls_files(client, '', recursive=True)
+
+
+ 
+maindf = pd.DataFrame(columns=['FileName', 'TagName','TagValue','TagConfidence'])
+for files in input_files:
+    ############################
+    # kick off OCR program here#
+    ############################ 
+    #print('Processing ...', files, '\n')
+    filename = files
+    blob_client = blob_service_client.get_blob_client(container, filename)
+    document_analysis_client = DocumentAnalysisClient(endpoint=endpoint, credential=AzureKeyCredential(key))
+    document = blob_client.download_blob().readall()
+
+    poller = document_analysis_client.begin_analyze_document(model_id=model_id, document=document)
+    result = poller.result()
+
+    for analyzed_document in result.documents:
+        df = pd.DataFrame(columns=['FileName', 'TagName','TagValue','TagConfidence'])
+
+        for name, field in analyzed_document.fields.items():
+            row = {
+                'FileName': filename,
+                'TagName': name,
+                'TagValue': field.value,
+                'TagConfidence': field.confidence
+            }
+            df = df.append(row, ignore_index='True')
+        df = df.fillna(0)
+
+        maindf = pd.concat([maindf, df], ignore_index=True, sort=False) 
+           
+#Write final ouput to csv file in main ADLS
+account_url = "https://<enter your storage account name>.blob.core.windows.net/"
+account_name = "<storage account name>"
+token = "<storage account key>"
+conn_str = "<Enter connection string for your storage account>"
+container = "<enter the container/directory path where you want the final output to be saved"
+blobname = "FinalOutput.csv"
+
+df = maindf 
+
+blob_block = ContainerClient.from_connection_string(conn_str, container)   
+output = io.StringIO()
+output = df.to_csv(encoding='utf-8', index=False)
+blob_block.upload_blob(blobname, output, overwrite=True, encoding='utf-8')
+

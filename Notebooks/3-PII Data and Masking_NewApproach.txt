@@ -1,0 +1,59 @@
+import pkg_resources
+
+from presidio_analyzer import AnalyzerEngine, PatternRecognizer, EntityRecognizer, Pattern, RecognizerResult
+from presidio_anonymizer import AnonymizerEngine, DeanonymizeEngine
+from presidio_anonymizer.entities import OperatorConfig
+from pyspark.sql.types import StringType
+from pyspark.sql.functions import input_file_name, regexp_replace
+from pyspark.sql.functions import col, pandas_udf, PandasUDFType
+import pandas as pd
+import os, io, csv
+from io import StringIO
+from azure.storage.blob import BlobServiceClient, ContainerClient
+from azure.core.credentials import AzureKeyCredential
+from pyspark.sql.functions import udf
+
+
+
+analyzer = AnalyzerEngine()
+anonymizer = AnonymizerEngine()
+broadcasted_analyzer = sc.broadcast(analyzer)
+broadcasted_anonymizer = sc.broadcast(anonymizer)
+
+
+# define a pandas UDF function and a series function over it.
+# Note that analyzer and anonymizer are broadcasted.
+ 
+def anonymize_text(text):
+    analyzer = broadcasted_analyzer.value
+    anonymizer = broadcasted_anonymizer.value
+    analyzer_results = analyzer.analyze(text=text, language="en")
+    anonymized_results = anonymizer.anonymize(
+        text=text,
+        analyzer_results=analyzer_results,
+        operators={"DEFAULT": OperatorConfig("replace", {"new_value": "<ANONYMIZED>"})},
+    )
+    return anonymized_results.text
+ 
+def anonymize_series(s: pd.Series) -> pd.Series:
+    return s.apply(anonymize_text)
+ 
+# define a the function as UDF
+anonymize = udf(anonymize_text, returnType=StringType()) 
+
+
+#Import Synthetic PII Data as spark dataframe
+input_df = spark.read.load('abfss://<container name>@<ADLS Name.dfs.core.windows.net/<File path>/FinalOutput.csv', format='csv'
+## If header exists uncomment line below
+, header=True
+)
+
+
+#Apply the UDF
+#anonymized_df = input_df.withColumn("TagValue", anonymize(col("TagValue")))
+anonymized_df = input_df.withColumn("NewCol", anonymize('TagValue')).drop('TagValue').withColumnRenamed("NewCol", "TagValue")
+#display(anonymized_df)
+
+anonymized_df.coalesce(1).write.option("header", True).mode("overwrite").csv("abfss://<container name>@<ADLS Name>.dfs.core.windows.net/<File Path>/FinalAnonymizedOutput.csv")
+
+

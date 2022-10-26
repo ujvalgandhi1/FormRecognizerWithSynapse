@@ -1,0 +1,17 @@
+#Write dataframe to dedicated sql pool
+
+import com.microsoft.spark.sqlanalytics
+from com.microsoft.spark.sqlanalytics.Constants import Constants
+
+df = spark.read.load('abfss://<container name>@<ADLS Name>.dfs.core.windows.net/<path to file>/FinalOutput.csv', format='csv', header=True)
+
+
+
+(df.write
+ .option(Constants.SERVER, "<Enter dedicated sql pool endpoint")
+# .option(Constants.USER, "<enter sql admin>")
+# .option(Constants.PASSWORD, "<admin password")
+ .option(Constants.TEMP_FOLDER, "abfss://<Container name>@<ADLS Name>.dfs.core.windows.net/")
+ .mode("overwrite")
+ .synapsesql("<Dedicated SQL Database name>.<schema name>.<Table Name>")
+)
